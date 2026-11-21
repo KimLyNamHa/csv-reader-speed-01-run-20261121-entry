@@ -10,6 +10,12 @@
 //   - no per-field function calls: the whole reader is one inlined loop;
 //   - errors are pushed with the record's start line/row, as the policy says.
 //
+// v2: the quoted-field segment helper (segValue) is now bounded to its
+// segment: every indexOf is capped at the segment end, so a quoted field with
+// no carriage return in it no longer scans to the end of the whole text on
+// every segment (that unbounded scan made CR-free quoted text pathologically
+// slow). Everything else is the v1 parser, byte-identical in output.
+//
 // Pure: no clock, no randomness, no locale, nothing kept between calls.
 
 /** Field endings: 0 = comma (the record goes on), 1 = line break, 2 = end of text. */
@@ -36,30 +42,35 @@ export function run(input) {
   // only line breaks need work. A CR or CRLF inside it is read as LF and
   // counts one line; a lone LF counts one line; anything else is copied as is.
   // Returns the segment text and advances `line` past its breaks.
+  //
+  // Bounded to the segment: the slice is a view, so no search runs past it.
+  // (The old form searched the whole rest of the text for a CR, which made
+  // a CR-free quoted text take seconds.)
   const segValue = (start, end) => {
-    const cr = text.indexOf('\r', start);
-    if (cr === -1 || cr >= end) {
+    const sub = text.slice(start, end);
+    const cr = sub.indexOf('\r');
+    if (cr === -1) {
       // No CR in the segment: the value is the slice as it stands; count LFs.
-      let i = text.indexOf('\n', start);
-      while (i !== -1 && i < end) {
+      let i = sub.indexOf('\n');
+      while (i !== -1) {
         line += 1;
-        i = text.indexOf('\n', i + 1);
+        i = sub.indexOf('\n', i + 1);
       }
-      return text.slice(start, end);
+      return sub;
     }
     // A CR is in the segment: scan it once, turning every CR and CRLF into LF.
     let out = '';
-    let s = start;
-    let i = start;
-    while (i < end) {
-      const c = text.charCodeAt(i);
+    let s = 0;
+    let i = 0;
+    while (i < sub.length) {
+      const c = sub.charCodeAt(i);
       if (c === 13) {
-        out += text.slice(s, i) + '\n';
+        out += sub.slice(s, i) + '\n';
         line += 1;
-        i += text.charCodeAt(i + 1) === 10 ? 2 : 1;
+        i += sub.charCodeAt(i + 1) === 10 ? 2 : 1;
         s = i;
       } else if (c === 10) {
-        out += text.slice(s, i) + '\n';
+        out += sub.slice(s, i) + '\n';
         line += 1;
         i += 1;
         s = i;
@@ -67,7 +78,7 @@ export function run(input) {
         i += 1;
       }
     }
-    return out + text.slice(s, end);
+    return out + sub.slice(s);
   };
 
   while (true) {
